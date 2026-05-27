@@ -2,7 +2,7 @@
 
 -- DROP DATABASE IF EXISTS "ComicDom";
 
-CREATE DATABASE "ComicDom"
+/*CREATE DATABASE  "ComicDom"
     WITH
     OWNER = postgres
     ENCODING = 'UTF8'
@@ -11,9 +11,9 @@ CREATE DATABASE "ComicDom"
     LOCALE_PROVIDER = 'libc'
     TABLESPACE = pg_default
     CONNECTION LIMIT = -1
-    IS_TEMPLATE = False;
+    IS_TEMPLATE = False;*/
 
-	--creation of the tables
+--question1
 
 --create artists table 
 	create table if not exists ARTIST
@@ -25,7 +25,7 @@ CREATE DATABASE "ComicDom"
 	  primary key (name)	  
 	);
 
---creation artwork table 
+--creation of artwork table 
 
     create table if not exists ARTWORK
 	(
@@ -116,3 +116,158 @@ CREATE DATABASE "ComicDom"
    foreign key(customer_name) references CUSTOMER(name)
    on delete restrict
   );
+
+
+--question2
+
+/*α. Βρείτε τα ονόματα των πελατών που έχουν ξοδέψει, συνολικά στo φεστιβάλ,
+πάνω από €50.000, και οι οποίοι έχουν δηλώσει ότι τους αρέσουν όλες οι
+ομάδες τέχνης που περιέχουν τη λέξη 'Manga' στο όνομά τους. Δεν είναι
+σίγουρο ότι η ομάδα τέχνης γράφεται ως 'Manga' ή 'manga' ή λίγο διαφορετικά.*/
+
+select distinct c.name
+from customer c
+join customer_prefers_group cu
+   on c.name = cu.customer_name
+join art_group a
+   on cu.group_name = a.group_name
+where c.money_spent > 50000
+and a.group_name ilike '%manga%';
+
+/*β. Εμφανίστε το όνομα του καλλιτέχνη, τον τύπο τέχνης (π.χ. comic, anime) και τη
+μέση τιμή των έργων του για τον συγκεκριμένο τύπο. Στο αποτέλεσμα πρέπει να
+συμπεριληφθούν μόνο οι καλλιτέχνες των οποίων η μέση τιμή σε αυτόν τον τύπο
+τέχνης είναι μεγαλύτερη από τη μέση τιμή όλων των έργων τέχνης του ίδιου
+τύπου στην γκαλερί.*/
+select artist_name , art_type , avg(price) as average_price
+from art_piece a
+group by art_type
+where avg(price) > all(
+    select avg(price)
+    from art_piece
+    where art_type
+);
+
+/*γ . Βρείτε τα ονόματα των ομάδων τέχνης τα οποία δεν περιέχουν κανένα έργο
+τέχνης αυτή τη στιγμή, αλλά περιλαμβάνουν τουλάχιστον έναν καλλιτέχνη που
+αρέσει σε περισσότερους από 10 πελάτες (με βάση τις προτιμήσεις των πελατών).*/
+select g.group_name
+from art_group g
+left join artwork_group ag
+   on g.group_name = ag.group_name
+where ag.artwork_title is null
+and exists
+(
+   select *
+   from artwork_group ag2
+   join artwork aw
+      on ag2.artwork_title = aw.title
+   where ag2.group_name = g.group_name
+   and aw.artist_name in
+   (
+      select artist_name
+      from customer_prefers_artist
+      group by artist_name
+      having count(customer_name) > 10
+   )
+);
+
+/* δ. Εμφανίστε τους καλλιτέχνες που έχουν δημιουργήσει έργα σε τουλάχιστον 3
+διαφορετικούς τύπους τέχνης (π.χ. comic και anime και graphic novel) και
+ταυτόχρονα, τουλάχιστον ένα έργο τους ανήκει σε ομάδα η οποία περιέχει τη
+λέξη 'manga'.*/
+select a.artist_name , count(a.art_type)
+from artwork a
+group by a.artist_name
+having count(a.art_type) >= 3
+and exists
+(
+   select *
+   from artwork aw
+   join artwork_group ar
+      on aw.title = ar.artwork_title
+   where aw.artist_name = a.artist_name
+   and ar.group_name ilike '%manga%'
+);
+
+/* ε. Βρείτε τους πελάτες οι οποίοι έχουν ξοδέψει τα περισσότερα χρήματα στην έκθεση
+(κορυφαίο 5% των πελατών με βάση το ποσό κατανάλωσης), αλλά δεν έχουν
+δηλώσει καμία προτίμηση για κανέναν καλλιτέχνη (ο πίνακας προτιμήσεων
+καλλιτεχνών για αυτούς είναι άδειος), εμφανίζοντας και τον αριθμό των ομάδων
+τέχνης που τους αρέσουν.*/
+
+with top_customers as
+(
+   select ceil(count(*) * 0.05) as top_n
+   from customer
+)
+select c.name, c.money_spent, count(cpg.group_name) as liked_groups
+from customer c
+left join customer_prefers_group cpg
+   on c.name = cpg.customer_name
+where not exists
+(
+   select *
+   from customer_prefers_artist cpa
+   where cpa.customer_name = c.name
+)
+group by c.name, c.money_spent
+order by c.money_spent desc
+limit
+(
+   select top_n
+   from top_customers
+);
+
+
+
+
+
+
+--question 3
+
+--part1
+--trigger for purchase
+create or replace function update_customer_spending()
+returns trigger
+as $$
+declare
+   artwork_price numeric(12,2);
+
+begin
+
+   -- find the price of the artwork
+   select price
+   into artwork_price
+   from artwork
+   where title = NEW.artwork_title;
+
+   -- update the money_spent field
+   update customer
+   set money_spent = money_spent + artwork_price
+   where name = NEW.customer_name;
+
+   -- check sponsor
+   if
+   (
+      select money_spent
+      from customer
+      where name = NEW.customer_name
+   ) > 100000
+   then
+      insert into sponsor_log
+      values
+      (
+         'SP' || NEW.purchase_id,
+         NEW.customer_name,
+         'Βαθμός 10',
+         current_timestamp
+      );
+   end if;
+   return NEW;
+end;
+$$ language plpgsql;
+
+
+
+--part2
