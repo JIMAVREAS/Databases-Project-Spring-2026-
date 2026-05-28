@@ -118,6 +118,8 @@
   );
 
 
+/*
+
 --question2
 
 /*α. Βρείτε τα ονόματα των πελατών που έχουν ξοδέψει, συνολικά στo φεστιβάλ,
@@ -125,27 +127,36 @@
 ομάδες τέχνης που περιέχουν τη λέξη 'Manga' στο όνομά τους. Δεν είναι
 σίγουρο ότι η ομάδα τέχνης γράφεται ως 'Manga' ή 'manga' ή λίγο διαφορετικά.*/
 
-select distinct c.name
+select c.name
 from customer c
-join customer_prefers_group cu
-   on c.name = cu.customer_name
-join art_group a
-   on cu.group_name = a.group_name
 where c.money_spent > 50000
-and a.group_name ilike '%manga%';
+and not exists
+(
+   select *
+   from art_group g
+   where g.group_name ilike '%manga%'
+   and not exists
+   (
+      select *
+      from customer_prefers_group cpg
+      where cpg.customer_name = c.name
+      and cpg.group_name = g.group_name
+   )
+);
 
 /*β. Εμφανίστε το όνομα του καλλιτέχνη, τον τύπο τέχνης (π.χ. comic, anime) και τη
 μέση τιμή των έργων του για τον συγκεκριμένο τύπο. Στο αποτέλεσμα πρέπει να
 συμπεριληφθούν μόνο οι καλλιτέχνες των οποίων η μέση τιμή σε αυτόν τον τύπο
 τέχνης είναι μεγαλύτερη από τη μέση τιμή όλων των έργων τέχνης του ίδιου
 τύπου στην γκαλερί.*/
-select artist_name , art_type , avg(price) as average_price
-from art_piece a
-group by art_type
-where avg(price) > all(
-    select avg(price)
-    from art_piece
-    where art_type
+select a.artist_name,a.art_type,avg(a.price) as average_price
+from artwork a
+group by a.artist_name, a.art_type
+having avg(a.price) >
+(
+   select avg(a2.price)
+   from artwork a2
+   where a2.art_type = a.art_type
 );
 
 /*γ . Βρείτε τα ονόματα των ομάδων τέχνης τα οποία δεν περιέχουν κανένα έργο
@@ -179,7 +190,7 @@ and exists
 select a.artist_name , count(a.art_type)
 from artwork a
 group by a.artist_name
-having count(a.art_type) >= 3
+having count( distinct a.art_type) >= 3
 and exists
 (
    select *
@@ -255,7 +266,7 @@ begin
       where name = NEW.customer_name
    ) > 100000
    then
-      insert into sponsor_log
+      insert into sponsor_tracker
       values
       (
          'SP' || NEW.purchase_id,
@@ -268,6 +279,61 @@ begin
 end;
 $$ language plpgsql;
 
+create trigger trigger_update_customer_spending
+after insert on purchase
+for each row
+execute function update_customer_spending();
 
 
 --part2
+do $$
+declare
+
+   rec_count integer := 0;
+   rec record;
+   artist_rec record;
+   artwork_rec record;
+
+begin
+--find the customers that have spent more than 20000
+   for rec in
+      select *
+      from customer
+      where money_spent > 20000
+   loop
+      rec_count := 0;
+--find the artists that the customers admires
+      for artist_rec in
+         select artist_name
+         from customer_prefers_artist
+         where customer_name = rec.name
+      loop
+--if the artwork of the artist exists 
+         for artwork_rec in
+            select *
+            from artwork ar
+            where ar.artist_name = artist_rec.artist_name
+            and not exists
+            (
+               select *
+               from purchase p
+               where p.artwork_title = ar.title
+            )
+         loop
+            rec_count := rec_count + 1;
+            raise notice
+            'Αγαπητέ %, ο καλλιτέχνης % που αγαπάτε έχει ένα διαθέσιμο έργο με τίτλο % στην τιμή των % euro.',
+            rec.name,
+            artist_rec.artist_name,
+            artwork_rec.title,
+            artwork_rec.price;
+            if rec_count > 3 then
+               exit;
+            end if;
+   end loop;
+   end loop;
+   end loop;
+
+end;
+$$;
+*/
